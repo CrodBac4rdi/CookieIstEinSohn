@@ -1,8 +1,7 @@
 "use client";
 
-import { useTransition } from "react";
-import { updateLeadStatus, triggerN8nWebhook } from "@/app/actions/leadActions";
-import { useToast } from "@/hooks/use-toast";
+import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import {
   Table,
   TableBody,
@@ -18,156 +17,170 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { ChevronDown, ChevronUp, SlidersHorizontal, X } from "lucide-react";
+import type { Lead } from "@/app/dashboard/types";
+import { LEAD_STATUSES, STATUS_COLORS } from "@/app/dashboard/types";
+import LeadDetailRow from "./LeadDetailRow";
 
-type Lead = {
-  id: number;
-  vorname: string;
-  nachname: string;
-  firma: string;
-  branche: string;
-  empfehlung: string;
-  fit_score: number;
-  status: string;
-};
+interface LeadTableProps {
+  initialLeads: Lead[];
+  currentStatus?: string;
+}
 
-const leadStatuses = [
-  "Neu",
-  "Disqualifiziert",
-  "Bereit",
-  "Kontaktiert",
-  "Interessiert",
-  "Kein Interesse",
-  "Termin vereinbart",
-  "Kunde",
-  "Verloren",
-  "Vernetzt - Wartezeit",
-];
+export default function LeadTable({ initialLeads, currentStatus }: LeadTableProps) {
+  const router = useRouter();
+  const [expandedId, setExpandedId] = useState<number | null>(null);
 
-const getStatusColor = (status: string) => {
-  switch (status) {
-    case "Neu":
-      return "bg-blue-100 text-blue-800";
-    case "Kunde":
-      return "bg-green-100 text-green-800";
-    case "Verloren":
-    case "Disqualifiziert":
-    case "Kein Interesse":
-      return "bg-red-100 text-red-800";
-    case "Interessiert":
-    case "Termin vereinbart":
-    case "Bereit":
-      return "bg-yellow-100 text-yellow-800";
-    default:
-      return "bg-gray-100 text-gray-800";
-  }
-};
-
-export default function LeadTable({ initialLeads }: { initialLeads: Lead[] }) {
-  const [isPending, startTransition] = useTransition();
-  const { toast } = useToast();
-
-  const handleStatusChange = async (id: number, newStatus: string) => {
-    startTransition(async () => {
-      try {
-        await updateLeadStatus(id, newStatus);
-        toast({
-          title: "Status aktualisiert",
-          description: "Der Lead-Status wurde erfolgreich gespeichert.",
-        });
-      } catch (error) {
-        toast({
-          variant: "destructive",
-          title: "Fehler",
-          description: "Status konnte nicht aktualisiert werden.",
-        });
-      }
-    });
-  };
-
-  const handleTriggerWorkflow = async (id: number, status: string) => {
-    try {
-      await triggerN8nWebhook(id, status);
-      toast({
-        title: "Workflow gestartet",
-        description: "Der n8n Workflow wurde erfolgreich getriggert.",
-      });
-    } catch (error) {
-      toast({
-        variant: "destructive",
-        title: "Fehler",
-        description: "Workflow konnte nicht gestartet werden.",
-      });
+  const handleStatusFilter = (value: string) => {
+    if (value === "all") {
+      router.push("/dashboard");
+    } else {
+      router.push(`/dashboard?status=${encodeURIComponent(value)}`);
     }
   };
 
+  const toggleRow = (id: number) => {
+    setExpandedId((prev) => (prev === id ? null : id));
+  };
+
+  const fitScoreColor = (score: number | null) => {
+    if (!score) return "text-muted-foreground";
+    if (score >= 80) return "text-emerald-600 dark:text-emerald-400 font-bold";
+    if (score >= 60) return "text-amber-600 dark:text-amber-400 font-semibold";
+    return "text-muted-foreground";
+  };
+
   return (
-    <div className="rounded-md border bg-card">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Name</TableHead>
-            <TableHead>Firma</TableHead>
-            <TableHead>Branche</TableHead>
-            <TableHead>Empfehlung</TableHead>
-            <TableHead className="text-right">Fit Score</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead className="text-right">Aktionen</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {initialLeads.map((lead) => (
-            <TableRow key={lead.id}>
-              <TableCell className="font-medium">
-                {lead.vorname} {lead.nachname}
-              </TableCell>
-              <TableCell>{lead.firma}</TableCell>
-              <TableCell>{lead.branche}</TableCell>
-              <TableCell className="truncate max-w-[150px]" title={lead.empfehlung}>
-                {lead.empfehlung}
-              </TableCell>
-              <TableCell className="text-right">
-                <Badge variant="secondary">{lead.fit_score}</Badge>
-              </TableCell>
-              <TableCell>
-                <Select
-                  disabled={isPending}
-                  defaultValue={lead.status}
-                  onValueChange={(val) => handleStatusChange(lead.id, val)}
-                >
-                  <SelectTrigger className={`w-[180px] border-none font-medium ${getStatusColor(lead.status)}`}>
-                    <SelectValue placeholder="Status wählen" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {leadStatuses.map((status) => (
-                      <SelectItem key={status} value={status}>
-                        {status}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </TableCell>
-              <TableCell className="text-right">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => handleTriggerWorkflow(lead.id, lead.status)}
-                >
-                  Workflow starten
-                </Button>
-              </TableCell>
-            </TableRow>
-          ))}
-          {initialLeads.length === 0 && (
-            <TableRow>
-              <TableCell colSpan={7} className="h-24 text-center">
-                Keine Leads gefunden.
-              </TableCell>
-            </TableRow>
+    <div className="space-y-3">
+      {/* Filter Row */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <SlidersHorizontal className="h-4 w-4" />
+            <span>Filter:</span>
+          </div>
+          <Select
+            value={currentStatus || "all"}
+            onValueChange={handleStatusFilter}
+          >
+            <SelectTrigger className="w-[200px] h-8 text-sm">
+              <SelectValue placeholder="Status wählen" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Alle Status</SelectItem>
+              {LEAD_STATUSES.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {s}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {currentStatus && currentStatus !== "all" && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 px-2 text-xs"
+              onClick={() => router.push("/dashboard")}
+            >
+              <X className="h-3 w-3 mr-1" />
+              Filter zurücksetzen
+            </Button>
           )}
-        </TableBody>
-      </Table>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {initialLeads.length} Lead{initialLeads.length !== 1 ? "s" : ""}
+          {currentStatus && currentStatus !== "all" && ` · gefiltert nach "${currentStatus}"`}
+        </p>
+      </div>
+
+      {/* Table */}
+      <div className="rounded-xl border border-border bg-card overflow-hidden">
+        <Table>
+          <TableHeader>
+            <TableRow className="bg-muted/30 hover:bg-muted/30">
+              <TableHead className="w-8" />
+              <TableHead className="font-semibold">Name</TableHead>
+              <TableHead className="font-semibold">Unternehmen</TableHead>
+              <TableHead className="font-semibold">Branche</TableHead>
+              <TableHead className="font-semibold text-right">Fit Score</TableHead>
+              <TableHead className="font-semibold">Status</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {initialLeads.map((lead) => {
+              const isOpen = expandedId === lead.customer_id;
+              return (
+                <>
+                  <TableRow
+                    key={lead.customer_id}
+                    className="cursor-pointer hover:bg-accent/50 transition-colors"
+                    onClick={() => toggleRow(lead.customer_id)}
+                  >
+                    <TableCell className="py-3">
+                      {isOpen ? (
+                        <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                      ) : (
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      )}
+                    </TableCell>
+                    <TableCell className="py-3 font-medium">
+                      {lead.first_name ?? ""} {lead.last_name ?? ""}
+                      {lead.job_title && (
+                        <p className="text-xs text-muted-foreground">{lead.job_title}</p>
+                      )}
+                    </TableCell>
+                    <TableCell className="py-3">
+                      <p>{lead.company_name ?? "—"}</p>
+                      {lead.country && (
+                        <p className="text-xs text-muted-foreground">{lead.country}</p>
+                      )}
+                    </TableCell>
+                    <TableCell className="py-3 text-sm">
+                      {lead.industry ?? "—"}
+                    </TableCell>
+                    <TableCell className="py-3 text-right">
+                      <span className={fitScoreColor(lead.company_fit_score)}>
+                        {lead.company_fit_score != null
+                          ? `${lead.company_fit_score}`
+                          : "—"}
+                      </span>
+                    </TableCell>
+                    <TableCell className="py-3">
+                      <span
+                        className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${
+                          STATUS_COLORS[lead.status] ??
+                          "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                        }`}
+                      >
+                        {lead.status || "—"}
+                      </span>
+                    </TableCell>
+                  </TableRow>
+
+                  {/* Expanded Detail Row */}
+                  {isOpen && (
+                    <TableRow key={`detail-${lead.customer_id}`} className="bg-muted/10 hover:bg-muted/10">
+                      <TableCell colSpan={6} className="p-0">
+                        <LeadDetailRow lead={lead} />
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </>
+              );
+            })}
+
+            {initialLeads.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={6} className="h-32 text-center text-muted-foreground">
+                  Keine Leads gefunden.
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
+      </div>
     </div>
   );
 }

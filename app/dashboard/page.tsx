@@ -1,94 +1,118 @@
 import { createClient } from "@/utils/supabase/server";
-import { redirect } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import LeadTable from "./components/LeadTable";
-import { Users, UserCheck, MessageSquare, Briefcase, LogOut } from "lucide-react";
+import { Users, MessageSquare, UserCheck, Link2 } from "lucide-react";
+import type { Lead } from "./types";
 
-export default async function DashboardPage() {
+interface DashboardPageProps {
+  searchParams: { status?: string };
+}
+
+export default async function DashboardPage({
+  searchParams,
+}: DashboardPageProps) {
   const supabase = createClient();
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  const statusFilter = searchParams?.status;
 
-  if (authError || !user) {
-    redirect("/login");
-  }
+  // Always fetch all leads for KPIs
+  const { data: allLeads } = await supabase
+    .from("leads")
+    .select("customer_id, status")
+    .order("customer_id", { ascending: false });
 
-  // Fetch leads
-  const { data: leads, error: leadsError } = await supabase
+  // Fetch filtered leads for the table
+  let query = supabase
     .from("leads")
     .select("*")
-    .order("id", { ascending: false });
+    .order("customer_id", { ascending: false });
+
+  if (statusFilter && statusFilter !== "all") {
+    query = query.eq("status", statusFilter);
+  }
+
+  const { data: leads, error: leadsError } = await query;
 
   if (leadsError) {
     console.error("Error fetching leads:", leadsError);
   }
 
-  const safeLeads = leads || [];
+  const safeAll = allLeads ?? [];
+  const safeLeads = (leads ?? []) as Lead[];
 
-  // Calculate KPIs
-  const totalLeads = safeLeads.length;
-  const angesprochen = safeLeads.filter(l => l.status !== "Neu").length;
-  const kontaktiert = safeLeads.filter(l => ["Kontaktiert", "Interessiert", "Termin vereinbart", "Kunde"].includes(l.status)).length;
-  const vernetzt = safeLeads.filter(l => l.status === "Vernetzt - Wartezeit").length;
+  // KPIs always based on ALL leads
+  const totalLeads = safeAll.length;
+  const angesprochen = safeAll.filter((l) => l.status !== "Neu" && l.status !== "").length;
+  const kontaktiert = safeAll.filter((l) =>
+    ["Kontaktiert", "Interessiert", "Termin vereinbart", "Kunde"].includes(l.status)
+  ).length;
+  const vernetzt = safeAll.filter((l) => l.status === "Vernetzt - Wartezeit").length;
+
+  const kpis = [
+    {
+      title: "Gesamt Leads",
+      value: totalLeads,
+      icon: Users,
+      color: "text-primary",
+      bg: "bg-primary/10",
+    },
+    {
+      title: "Angesprochen",
+      value: angesprochen,
+      icon: MessageSquare,
+      color: "text-emerald-600 dark:text-emerald-400",
+      bg: "bg-emerald-100 dark:bg-emerald-900/20",
+    },
+    {
+      title: "Kontaktiert / Aktiv",
+      value: kontaktiert,
+      icon: UserCheck,
+      color: "text-violet-600 dark:text-violet-400",
+      bg: "bg-violet-100 dark:bg-violet-900/20",
+    },
+    {
+      title: "Vernetzt - Wartezeit",
+      value: vernetzt,
+      icon: Link2,
+      color: "text-cyan-600 dark:text-cyan-400",
+      bg: "bg-cyan-100 dark:bg-cyan-900/20",
+    },
+  ];
 
   return (
-    <div className="flex-1 space-y-4 p-8 pt-6 bg-muted/20 min-h-screen">
-      <div className="flex items-center justify-between space-y-2 mb-8">
-        <h2 className="text-3xl font-bold tracking-tight">Dashboard</h2>
-        <div className="flex items-center space-x-4">
-          <span className="text-sm text-muted-foreground hidden sm:inline-block">
-            Eingeloggt als: <span className="font-medium text-foreground">{user.email}</span>
-          </span>
-          <form action="/auth/signout" method="post">
-            <button type="submit" className="flex items-center space-x-2 text-sm text-muted-foreground hover:text-foreground transition-colors">
-              <LogOut className="h-4 w-4" />
-              <span>Abmelden</span>
-            </button>
-          </form>
-        </div>
+    <div className="space-y-6">
+      {/* Page Header */}
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">Lead-Übersicht</h1>
+        <p className="text-muted-foreground text-sm mt-1">
+          Alle qualifizierten Leads im Überblick. KPI-Werte beziehen sich immer auf alle Leads.
+        </p>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Gesamt Leads</CardTitle>
-            <Users className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{totalLeads}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Angesprochen</CardTitle>
-            <MessageSquare className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{angesprochen}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Kontaktiert / Aktiv</CardTitle>
-            <UserCheck className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{kontaktiert}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Vernetzt - Wartezeit</CardTitle>
-            <Briefcase className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{vernetzt}</div>
-          </CardContent>
-        </Card>
+      {/* KPI Cards */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {kpis.map((kpi) => (
+          <Card key={kpi.title} className="kpi-card-glow border-border/50">
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium text-muted-foreground">
+                {kpi.title}
+              </CardTitle>
+              <div className={`rounded-lg p-2 ${kpi.bg}`}>
+                <kpi.icon className={`h-4 w-4 ${kpi.color}`} />
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="text-3xl font-bold">{kpi.value}</div>
+              <p className="text-xs text-muted-foreground mt-1">
+                von {totalLeads} gesamt
+              </p>
+            </CardContent>
+          </Card>
+        ))}
       </div>
 
-      <div className="mt-8">
-        <h3 className="text-xl font-semibold mb-4 tracking-tight">Ihre Leads</h3>
-        <LeadTable initialLeads={safeLeads} />
+      {/* Lead Table */}
+      <div>
+        <LeadTable initialLeads={safeLeads} currentStatus={statusFilter} />
       </div>
     </div>
   );

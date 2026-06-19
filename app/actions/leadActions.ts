@@ -3,6 +3,7 @@
 import { z } from "zod";
 import { createClient } from "@/utils/supabase/server";
 import { revalidatePath } from "next/cache";
+import type { WorkflowRun } from "@/app/dashboard/types";
 
 const leadStatusEnum = z.enum([
   "Neu",
@@ -18,82 +19,132 @@ const leadStatusEnum = z.enum([
 ]);
 
 const updateLeadSchema = z.object({
-  id: z.number().int().positive(),
+  customer_id: z.number().int().positive(),
   status: leadStatusEnum,
 });
 
-export async function updateLeadStatus(id: number, status: string) {
-  // 1. Zod Validation
-  const parsed = updateLeadSchema.safeParse({ id, status });
-  if (!parsed.success) {
-    throw new Error("Invalid input data");
-  }
+const workflowTypeEnum = z.enum(["scraping", "outreach"]);
 
-  // 2. Auth Check
+// ─── Auth helper ─────────────────────────────────────────────────────────────
+async function requireAuth() {
   const supabase = createClient();
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  const {
+    data: { user },
+    error,
+  } = await supabase.auth.getUser();
+  if (error || !user) throw new Error("Unauthorized");
+  return { supabase, user };
+}
 
-  if (authError || !user) {
-    throw new Error("Unauthorized");
-  }
+// ─── Update Lead Status ───────────────────────────────────────────────────────
+export async function updateLeadStatus(customer_id: number, status: string) {
+  const { supabase } = await requireAuth();
 
-  // 3. Supabase Update
+  const parsed = updateLeadSchema.safeParse({ customer_id, status });
+  if (!parsed.success) throw new Error("Ungültige Eingabedaten");
+
   const { error } = await supabase
     .from("leads")
     .update({ status: parsed.data.status })
-    .eq("id", parsed.data.id);
+    .eq("customer_id", parsed.data.customer_id);
 
-  if (error) {
-    throw new Error("Database error updating lead status");
-  }
+  if (error) throw new Error("Datenbankfehler beim Aktualisieren des Status");
 
-  // 4. Revalidate
   revalidatePath("/dashboard");
   return { success: true };
 }
 
-export async function triggerN8nWebhook(id: number, status: string) {
-  // 1. Zod Validation
-  const parsed = updateLeadSchema.safeParse({ id, status });
-  if (!parsed.success) {
-    throw new Error("Invalid input data");
-  }
+// ─── Internal: trigger a workflow and log it ─────────────────────────────────
+async function triggerWorkflow(type: "scraping" | "outreach") {
+  const { supabase, user } = await requireAuth();
 
-  // 2. Auth Check
-  const supabase = createClient();
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  const webhookUrl =
+    type === "scraping"
+      ? process.env.N8N_WEBHOOK_SCRAPING_URL
+      : process.env.N8N_WEBHOOK_OUTREACH_URL;
 
-  if (authError || !user) {
-    throw new Error("Unauthorized");
-  }
-
-  // 3. Trigger Webhook
-  const webhookUrl = process.env.N8N_WEBHOOK_URL;
   if (!webhookUrl) {
-    throw new Error("N8N_WEBHOOK_URL is not configured");
+    throw new Error(
+      `${type === "scraping" ? "N8N_WEBHOOK_SCRAPING_URL" : "N8N_WEBHOOK_OUTREACH_URL"} ist nicht konfiguriert`
+    );
   }
 
+  // 1. Erstelle workflow_runs Eintrag mit Status "pending"
+  const { data: runData, error: insertError } = await supabase
+    .from("workflow_runs")
+    .insert({
+      workflow_type: type,
+      status: "pending",
+      triggered_by: user.email,
+    })
+    .select("id")
+    .single();
+
+  if (insertError || !runData) {
+    throw new Error("Workflow-Run konnte nicht erstellt werden");
+  }
+
+  const runId = runData.id;
+
+  // 2. POST an N8N mit run_id im Payload
   try {
     const response = await fetch(webhookUrl, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        leadId: parsed.data.id,
-        status: parsed.data.status,
-        triggeredBy: user.email,
+        workflow_type: type,
+        run_id: runId,
+        triggered_by: user.email,
         timestamp: new Date().toISOString(),
       }),
     });
 
     if (!response.ok) {
-      throw new Error(`Webhook responded with status: ${response.status}`);
+      // Markiere als failed wenn N8N nicht erreichbar
+      await supabase
+        .from("workflow_runs")
+        .update({ status: "failed", error_message: `HTTP ${response.status}` })
+        .eq("id", runId);
+      throw new Error(`Webhook antwortete mit Status: ${response.status}`);
     }
 
-    return { success: true };
-  } catch (error) {
-    console.error("Webhook trigger failed:", error);
-    throw new Error("Failed to trigger workflow");
+    // 3. Setze auf "running" nach erfolgreicher Übermittlung
+    await supabase
+      .from("workflow_runs")
+      .update({ status: "running" })
+      .eq("id", runId);
+  } catch (err) {
+    if (err instanceof Error && err.message.includes("Webhook")) throw err;
+    await supabase
+      .from("workflow_runs")
+      .update({ status: "failed", error_message: String(err) })
+      .eq("id", runId);
+    throw new Error("Workflow konnte nicht gestartet werden");
   }
+
+  revalidatePath("/dashboard/workflows");
+  return { success: true, runId };
+}
+
+// ─── Public: Scraping ─────────────────────────────────────────────────────────
+export async function triggerScraping() {
+  return triggerWorkflow("scraping");
+}
+
+// ─── Public: Outreach ─────────────────────────────────────────────────────────
+export async function triggerOutreach() {
+  return triggerWorkflow("outreach");
+}
+
+// ─── Get Workflow Runs ────────────────────────────────────────────────────────
+export async function getWorkflowRuns(): Promise<WorkflowRun[]> {
+  const supabase = createClient();
+  const { data, error } = await supabase
+    .from("workflow_runs")
+    .select("*")
+    .order("triggered_at", { ascending: false })
+    .limit(50);
+
+  if (error) return [];
+  return (data ?? []) as WorkflowRun[];
 }
